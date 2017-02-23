@@ -11,12 +11,12 @@ print("tf.__version__:%s" % tf.__version__)
 start = int(time.time())
 
 gpu = True
-# gpu = False
 debug = False  # summary.histogram  : 'module' object has no attribute 'histogram' WTF
 # debug = True  # histogram_summary ...
+log = True # False / set test_step higher if you worry about performance!
 
 # clear_tensorboard()
-if debug:
+if log:
 	set_tensorboard_run(auto_increment=True)
 	run_tensorboard(restart=False)
 
@@ -417,7 +417,7 @@ class net:
 		# t = tf.verify_tensor_all_finite(t, msg)
 		tf.add_check_numerics_ops()
 		self.summaries = tf.summary.merge_all()
-		self.summary_writer = tf.summary.FileWriter(current_logdir(), session.graph)  
+		self.summary_writer = tf.summary.FileWriter(current_logdir(), session.graph)
 		if not dropout: dropout = 1.  # keep all
 		x = self.x
 		y = self.y
@@ -439,7 +439,7 @@ class net:
 				seconds = int(time.time()) - start
 				# Calculate batch accuracy, loss
 				feed = {x: batch_xs, y: batch_ys, keep_prob: 1., self.train_phase: False}
-				acc, summary = session.run([self.accuracy, self.summaries], feed_dict=feed)
+				acc, summary = session.run([self.accuracy], feed_dict=feed)
 				# self.summary_writer.add_summary(summary, step) # only test summaries for smoother curve
 				print("\rStep {:d} Loss= {:.6f} Accuracy= {:.3f} Time= {:d}s".format(step, loss, acc, seconds), end=' ')
 				if str(loss) == "nan": return print("\nLoss gradiant explosion, exiting!!!")  # restore!
