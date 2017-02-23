@@ -3,8 +3,15 @@ from __future__ import print_function
 import time
 import numpy as np
 import tensorflow as tf # needs tf > 1.0
+from tensorflow.contrib import slim
 from tensorflow.contrib.tensorboard.plugins import projector  # for 3d PCA/ t-SNE
 from .tensorboard_util import *
+from operator import mul
+try:
+	from functools import reduce
+except:  # python3 compatibility WTF
+	pass
+
 
 print("tf.__version__:%s" % tf.__version__)
 
@@ -115,21 +122,27 @@ class net:
 			self.classifier()  # 10 classes auto
 
 	def dropout(self, keep_rate=0.6):
-		self.add(tf.nn.dropout(self.last_layer, keep_rate))
+		droppedout = tf.nn.dropout(self.last_layer, keep_rate)
+		return self.add(droppedout)
 
 	def add(self, layer):
 		self.layers.append(layer)
 		self.last_layer = layer
 		self.last_shape = layer.get_shape()
+		# help(self.last_shape.dims)
+		# print(self.last_shape.dims)
+		self.last_width = reduce(lambda x,y:mul(x,y.value or 1), self.last_shape.dims, 1)
+		return layer # For chaining
+
 
 	def reshape(self, shape):
-		self.last_layer = tf.reshape(self.last_layer, shape)
-		self.last_shape = shape
-		self.last_width = shape[-1]
+		reshaped = tf.reshape(self.last_layer, shape)
+		return self.add(reshaped)
 
 	# BN also serve as a stochastic regularizer and makes dropout regularization redundant! Furthermore dropout never really helped when inserted between convolution layers and was most useful between fully connected layers.
 	# when applying batchnorm you can drop biases [redundant: BN(x)=ax+b] and must increase learning rate!! ++
 	def batchnorm(self, input=None, center=False):  # for conv2d and fully_connected [only!?]
+		# slim.batch_norm
 		if input is None: input = self.last_layer
 		from tensorflow.contrib.layers.python.layers import batch_norm as batch_norm
 		with tf.name_scope('batchnorm') as scope:
@@ -139,7 +152,7 @@ class net:
 			# activation_fn all in one go!  sigmoid: center=true! relu:center=False?
 			# is_training why not automatic??  bad implementation: placeholder -> needs_moments
 			# vs low level nn.batch_normalization(inputs, mean, variance, beta, gamma, epsilon)   # nn.fused_batch_norm
-			# data_format: A string. `NHWC` vs NCHW WHY NOT AUTO??
+			# data_format: A string. `NHWC` vs NCHW    WHY NOT AUTO??
 			# activation_fn inline
 			train_op = batch_norm(input, is_training=True, center=center, updates_collections=None, scope=scope)
 			test_op = batch_norm(input, is_training=False, updates_collections=None, center=False, scope=scope, reuse=True)
@@ -148,7 +161,7 @@ class net:
 			self.add(output)
 			return output
 
-	def addLayer(self, nChannels, nOutChannels, do_dropout):
+	def addDeepConvLayer(self, nChannels, nOutChannels, do_dropout):
 		ident = self.last_layer
 		self.batchnorm()
 		# self.add(tf.nn.relu(ident)) # nChannels ?
@@ -218,17 +231,17 @@ class net:
 		# self.add(tf.nn.SpatialConvolution(3, nChannels, 3, 3, 1, 1, 1, 1))
 
 		for i in range(N):
-			self.addLayer(nChannels, growthRate, do_dropout)
+			self.addDeepConvLayer(nChannels, growthRate, do_dropout)
 			nChannels += growthRate
 		self.addTransition(nChannels, nChannels, do_dropout)
 
 		for i in range(N):
-			self.addLayer(nChannels, growthRate, do_dropout)
+			self.addDeepConvLayer(nChannels, growthRate, do_dropout)
 			nChannels += growthRate
 		self.addTransition(nChannels, nChannels, do_dropout)
 
 		for i in range(N):
-			self.addLayer(nChannels, growthRate, do_dropout)
+			self.addDeepConvLayer(nChannels, growthRate, do_dropout)
 			nChannels += growthRate
 
 		self.batchnorm()
@@ -286,16 +299,19 @@ class net:
 				self.last_width = width
 				depth = depth - 1
 				self.last_shape = [-1, width]  # dense
+		return self.last_layer
 
-	def conv2(self, shape, act=tf.nn.relu, pool=True, dropout=False, norm=True, name=None):
+	def conv2d(self, outChannels=20, kernel=[3, 3], pool=True, dropout=False, norm=True):
 		with tf.name_scope('conv'):
 			print("input  shape ", self.last_shape)
-			print("conv   shape ", shape)
-			# padding='VALID'
-			conv = slim.conv2d(self.last_layer, shape[-1], [shape[1], shape[2]], 3, padding='SAME', scope=name)
+			print("conv   outChannels ", outChannels)
+			conv = slim.conv2d(self.last_layer, outChannels, kernel, scope="conv_" + str(len(self.layers)))
+			if pool: conv = slim.max_pool2d(conv, [3, 3], scope='pool')
 			# if pool: conv = tf.nn.max_pool(conv, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
-			# if(pool): conv = slim.max_pool2d(conv, [2, 2], 1, scope='pool1')
-			# if(pool): conv = slim.max_pool2d(conv, [3, 3], 2, scope='pool1')
+			if dropout: conv = tf.nn.dropout(conv, self.keep_prob)
+			if norm: conv = tf.nn.lrn(conv, depth_radius=4, bias=1.0, alpha=0.001 / 9.0, beta=0.75)
+			if debug: tf.summary.histogram('norm_' + str(len(self.layers)), conv)
+			print("output shape ", conv.get_shape())
 			self.add(conv)
 
 	# Convolution Layer
@@ -379,7 +395,8 @@ class net:
 	def regression(self, dimensions, tolerance=3.):
 		# self.dense(100)
 		with tf.name_scope("regression"):
-			self.dense(dimensions)
+			# if self.last_width != dimensions:
+			# 	self.dense(dimensions)
 			self.y = tf.placeholder(tf.float32, [None, dimensions], name="target_y")  # self.batch_size
 			print("REGRESSION 'accuracy' might not be indicative, watch loss")
 			with tf.name_scope("train"):
@@ -526,3 +543,16 @@ class net:
 		# print("prediction: %s" % result)
 		print("predicted: %s" % best)
 		return best
+
+	def max_pool_with_argmax(self):
+		print("max_pool_with_argmax")
+		kernel = [1, 3, 3, 1]
+		strides = [1, 1, 1, 1]
+		output, argmax=tf.nn.max_pool_with_argmax(self.last_layer, kernel, strides, padding="SAME")
+		# 'Targmax' has DataType float32 not in list of allowed values: int32, int64 WTF!
+		argmax=tf.cast(argmax,tf.float32)
+		print(argmax)
+		print("Jajaja: argmax as int not differentiable yet :(")
+		return self.add(argmax) # No gradients provided for any variable:
+# check your graph for ops that do not support gradients.  Jajaja: argmax as int not differentiable :(
+
