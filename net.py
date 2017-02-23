@@ -98,7 +98,7 @@ class net:
 		with tf.name_scope('data'):
 			if self.input_shape and len(self.input_shape) == 2:
 				shape_ = [None, self.input_shape[0], self.input_shape[1]]  # batch:None
-				# todo [None, *self.input_shape]
+				# todo [batch_size, *self.input_shape]
 				self.x = x = self.input = tf.placeholder(tf.float32, shape_, name="input_x")
 				self.last_shape = x
 			elif self.input_width:
