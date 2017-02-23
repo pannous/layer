@@ -439,8 +439,9 @@ class net:
 				seconds = int(time.time()) - start
 				# Calculate batch accuracy, loss
 				feed = {x: batch_xs, y: batch_ys, keep_prob: 1., self.train_phase: False}
-				acc, summary = session.run([self.accuracy], feed_dict=feed)
-				# self.summary_writer.add_summary(summary, step) # only test summaries for smoother curve
+				acc = session.run([self.accuracy], feed_dict=feed)
+				# acc, summary = session.run([self.accuracy, self.summaries], feed_dict=feed)
+				# self.summary_writer.add_summary(summary, step) # only test summaries for smoother curve and SPEED!
 				print("\rStep {:d} Loss= {:.6f} Accuracy= {:.3f} Time= {:d}s".format(step, loss, acc, seconds), end=' ')
 				if str(loss) == "nan": return print("\nLoss gradiant explosion, exiting!!!")  # restore!
 			if step % test_step == 0: self.test(step)
