@@ -8,12 +8,14 @@ else:
 	tensorboard_logs = '/tmp/tensorboard_logs/'
 
 global logdir
+logdir=tensorboard_logs
 
 def get_last_tensorboard_run_nr():
 	try:
 		logs=subprocess.check_output(["ls", tensorboard_logs]).split("\n")
 	except:
-		os.system("mkdir " + tensorboard_logs)
+		if not os.path.exists(logdir):
+			os.system("mkdir " + tensorboard_logs)
 		print("first run!")
 		return 0
 	# print("logs: ",logs)

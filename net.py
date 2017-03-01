@@ -3,21 +3,30 @@ from __future__ import print_function
 import time
 import numpy as np
 import tensorflow as tf # needs tf > 1.0
+from tensorflow.contrib import slim
 from tensorflow.contrib.tensorboard.plugins import projector  # for 3d PCA/ t-SNE
 from .tensorboard_util import *
+from operator import mul
+try:
+	from functools import reduce
+except:  # python3 compatibility WTF
+	pass
+
+tf.max = tf.reduce_max
 
 print("tf.__version__:%s" % tf.__version__)
 
 start = int(time.time())
 
-# clear_tensorboard()
-set_tensorboard_run(auto_increment=True)
-run_tensorboard(restart=False)
-
 gpu = True
-# gpu = False
 debug = False  # summary.histogram  : 'module' object has no attribute 'histogram' WTF
-debug = True  # histogram_summary ...
+# debug = True  # histogram_summary ...
+log = True # False / set test_step higher if you worry about performance!
+
+# clear_tensorboard()
+if log:
+	set_tensorboard_run(auto_increment=True)
+	run_tensorboard(restart=False)
 
 visualize_cluster = False  # NOT YET: 'ProjectorConfig' object has no attribute 'embeddings'
 
@@ -76,6 +85,7 @@ class net:
 				raise Exception("Please set input_width or input_shape")
 			if output_width == 0:
 				raise Exception("Please set number of classes via output_width")
+			# tf.Transform data
 			self.generate_model(model)
 
 	def get_data_shape(self):
@@ -92,12 +102,12 @@ class net:
 		with tf.name_scope('state'):
 			self.keep_prob = tf.placeholder(tf.float32, name="dropout_keep_prob")  # 1 for testing! else 1 - dropout
 			self.train_phase = tf.placeholder(tf.bool, name='train_phase')
-			with tf.device(_cpu): self.global_step = tf.Variable(
-				0)  # dont set, feed or increment global_step, tensorflow will do it automatically
+			with tf.device(_cpu): self.global_step = tf.Variable(0)
+			# dont set, feed or increment global_step, tensorflow will do it automatically
 		with tf.name_scope('data'):
 			if self.input_shape and len(self.input_shape) == 2:
 				shape_ = [None, self.input_shape[0], self.input_shape[1]]  # batch:None
-				# todo [None, *self.input_shape]
+				# todo [batch_size, *self.input_shape]
 				self.x = x = self.input = tf.placeholder(tf.float32, shape_, name="input_x")
 				self.last_shape = x
 			elif self.input_width:
@@ -114,21 +124,27 @@ class net:
 			self.classifier()  # 10 classes auto
 
 	def dropout(self, keep_rate=0.6):
-		self.add(tf.nn.dropout(self.last_layer, keep_rate))
+		droppedout = tf.nn.dropout(self.last_layer, keep_rate)
+		return self.add(droppedout)
 
 	def add(self, layer):
 		self.layers.append(layer)
 		self.last_layer = layer
 		self.last_shape = layer.get_shape()
+		# help(self.last_shape.dims)
+		# print(self.last_shape.dims)
+		self.last_width = reduce(lambda x,y:mul(x,y.value or 1), self.last_shape.dims, 1)
+		return layer # For chaining
+
 
 	def reshape(self, shape):
-		self.last_layer = tf.reshape(self.last_layer, shape)
-		self.last_shape = shape
-		self.last_width = shape[-1]
+		reshaped = tf.reshape(self.last_layer, shape)
+		return self.add(reshaped)
 
 	# BN also serve as a stochastic regularizer and makes dropout regularization redundant! Furthermore dropout never really helped when inserted between convolution layers and was most useful between fully connected layers.
 	# when applying batchnorm you can drop biases [redundant: BN(x)=ax+b] and must increase learning rate!! ++
 	def batchnorm(self, input=None, center=False):  # for conv2d and fully_connected [only!?]
+		# slim.batch_norm
 		if input is None: input = self.last_layer
 		from tensorflow.contrib.layers.python.layers import batch_norm as batch_norm
 		with tf.name_scope('batchnorm') as scope:
@@ -138,7 +154,7 @@ class net:
 			# activation_fn all in one go!  sigmoid: center=true! relu:center=False?
 			# is_training why not automatic??  bad implementation: placeholder -> needs_moments
 			# vs low level nn.batch_normalization(inputs, mean, variance, beta, gamma, epsilon)   # nn.fused_batch_norm
-			# data_format: A string. `NHWC` vs NCHW WHY NOT AUTO??
+			# data_format: A string. `NHWC` vs NCHW    WHY NOT AUTO??
 			# activation_fn inline
 			train_op = batch_norm(input, is_training=True, center=center, updates_collections=None, scope=scope)
 			test_op = batch_norm(input, is_training=False, updates_collections=None, center=False, scope=scope, reuse=True)
@@ -147,7 +163,7 @@ class net:
 			self.add(output)
 			return output
 
-	def addLayer(self, nChannels, nOutChannels, do_dropout):
+	def addDeepConvLayer(self, nChannels, nOutChannels, do_dropout):
 		ident = self.last_layer
 		self.batchnorm()
 		# self.add(tf.nn.relu(ident)) # nChannels ?
@@ -211,24 +227,24 @@ class net:
 		# set it to be comparable with growth rate ??
 
 		growthRate = 12
-		self.conv([3, 3, 1, nChannels]) # why this
+		self.conv([3, 3, 1, nChannels])  # why this
 		# self.conv([1, 3, 3, nChannels]) # and not this?
 
 		# self.add(tf.nn.SpatialConvolution(3, nChannels, 3, 3, 1, 1, 1, 1))
 
 		for i in range(N):
-			self.addLayer(nChannels, growthRate, do_dropout)
-			nChannels = nChannels + growthRate
+			self.addDeepConvLayer(nChannels, growthRate, do_dropout)
+			nChannels += growthRate
 		self.addTransition(nChannels, nChannels, do_dropout)
 
 		for i in range(N):
-			self.addLayer(nChannels, growthRate, do_dropout)
-			nChannels = nChannels + growthRate
+			self.addDeepConvLayer(nChannels, growthRate, do_dropout)
+			nChannels += growthRate
 		self.addTransition(nChannels, nChannels, do_dropout)
 
 		for i in range(N):
-			self.addLayer(nChannels, growthRate, do_dropout)
-			nChannels = nChannels + growthRate
+			self.addDeepConvLayer(nChannels, growthRate, do_dropout)
+			nChannels += growthRate
 
 		self.batchnorm()
 		self.add(tf.nn.relu(self.last_layer))
@@ -285,16 +301,19 @@ class net:
 				self.last_width = width
 				depth = depth - 1
 				self.last_shape = [-1, width]  # dense
+		return self.last_layer
 
-	def conv2(self, shape, act=tf.nn.relu, pool=True, dropout=False, norm=True, name=None):
+	def conv2d(self, outChannels=20, kernel=[3, 3], pool=True, dropout=False, norm=True):
 		with tf.name_scope('conv'):
 			print("input  shape ", self.last_shape)
-			print("conv   shape ", shape)
-			# padding='VALID'
-			conv = slim.conv2d(self.last_layer, shape[-1], [shape[1], shape[2]], 3, padding='SAME', scope=name)
+			print("conv   outChannels ", outChannels)
+			conv = slim.conv2d(self.last_layer, outChannels, kernel, scope="conv_" + str(len(self.layers)))
+			if pool: conv = slim.max_pool2d(conv, [3, 3], scope='pool')
 			# if pool: conv = tf.nn.max_pool(conv, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
-			# if(pool): conv = slim.max_pool2d(conv, [2, 2], 1, scope='pool1')
-			# if(pool): conv = slim.max_pool2d(conv, [3, 3], 2, scope='pool1')
+			if dropout: conv = tf.nn.dropout(conv, self.keep_prob)
+			if norm: conv = tf.nn.lrn(conv, depth_radius=4, bias=1.0, alpha=0.001 / 9.0, beta=0.75)
+			if debug: tf.summary.histogram('norm_' + str(len(self.layers)), conv)
+			print("output shape ", conv.get_shape())
 			self.add(conv)
 
 	# Convolution Layer
@@ -330,11 +349,11 @@ class net:
 		val = tf.transpose(val, [1, 0, 2])
 		self.last = tf.gather(val, int(val.get_shape()[0]) - 1)
 
-	def classifier(self, classes=0):  # Define loss and optimizer
+	def classifier(self, classes=0,dim=1):  # Define loss and optimizer
 		if not classes: classes = self.num_classes
 		if not classes: raise Exception("Please specify num_classes")
 		with tf.name_scope('prediction'):  # prediction
-			if self.last_width != classes:
+			if dim==1 and self.last_width != classes:
 				# print("Automatically adding dense prediction")
 				self.dense(hidden=classes, activation=None, dropout=False)
 			# cross_entropy = -tf.reduce_sum(y_*y)
@@ -344,6 +363,7 @@ class net:
 			if classes > 100:
 				print("using sampled_softmax_loss")
 				y = prediction = self.last_layer
+				tf.nn.sparse_softmax_cross_entropy_with_logits()
 				self.cost = tf.reduce_mean(tf.nn.sampled_softmax_loss(y, y_))  # for big vocab
 			elif manual:
 				# prediction = y =self.last_layer=tf.nn.softmax(self.last_layer)
@@ -375,21 +395,26 @@ class net:
 		# Launch the graph
 
 	# noinspection PyAttributeOutsideInit
-	def regression(self, param):
+	def regression(self, dimensions, tolerance=3.):
 		# self.dense(100)
-		self.dense(param)
-		self.y = tf.placeholder(tf.float32, [None, param], name="target_y")  # self.batch_size
-		with tf.name_scope("train"):
-			self.learning_rate = tf.Variable(0.5, trainable=False)
-			self.cost = tf.reduce_mean(tf.pow(self.y - self.last_layer, 2))
-			self.optimize = tf.train.AdamOptimizer(self.learning_rate).minimize(self.cost)
-			self.accuracy = tf.maximum(0., 1 - tf.sqrt(self.cost))
-			tf.add_to_collection('train_ops', [self.learning_rate, self.cost, self.optimize, self.accuracy])
+		with tf.name_scope("regression"):
+			# if self.last_width != dimensions:
+			# 	self.dense(dimensions)
+			self.y = tf.placeholder(tf.float32, [None, dimensions], name="target_y")  # self.batch_size
+			print("REGRESSION 'accuracy' might not be indicative, watch loss")
+			with tf.name_scope("train"):
+				# self.learning_rate = tf.Variable(0.5, trainable=False)
+				self.cost = tf.reduce_mean(tf.pow(self.y - self.last_layer, 2))
+				self.optimize = tf.train.AdamOptimizer(self.learning_rate).minimize(self.cost)
+				self.accuracy = tf.maximum(0., 100 - tf.sqrt(self.cost)/tolerance)
+				# self.accuracy = 1 - abs(self.y - self.last_layer)
+				tf.add_to_collection('train_ops', [self.learning_rate, self.cost, self.optimize, self.accuracy])
 
 	def debug_print(self, throughput, to_print=[]):
 		return tf.cond(self.train_phase, lambda: throughput, lambda: tf.Print(throughput, to_print + [nop()], "OK!"))
 
 	def next_batch(self, batch_size, session, test=False):
+		# self.data either a generator or a data struct with properties .train/test.images/labels
 		try:
 			if test:
 				test_images = self.data.test.images[:batch_size]
@@ -412,7 +437,7 @@ class net:
 		# t = tf.verify_tensor_all_finite(t, msg)
 		tf.add_check_numerics_ops()
 		self.summaries = tf.summary.merge_all()
-		self.summary_writer = tf.summary.FileWriter(current_logdir(), session.graph)  
+		self.summary_writer = tf.summary.FileWriter(current_logdir(), session.graph)
 		if not dropout: dropout = 1.  # keep all
 		x = self.x
 		y = self.y
@@ -434,8 +459,9 @@ class net:
 				seconds = int(time.time()) - start
 				# Calculate batch accuracy, loss
 				feed = {x: batch_xs, y: batch_ys, keep_prob: 1., self.train_phase: False}
-				acc, summary = session.run([self.accuracy, self.summaries], feed_dict=feed)
-				# self.summary_writer.add_summary(summary, step) # only test summaries for smoother curve
+				acc = session.run(self.accuracy, feed_dict=feed)
+				# acc, summary = session.run([self.accuracy, self.summaries], feed_dict=feed)
+				# self.summary_writer.add_summary(summary, step) # only test summaries for smoother curve and SPEED!
 				print("\rStep {:d} Loss= {:.6f} Accuracy= {:.3f} Time= {:d}s".format(step, loss, acc, seconds), end=' ')
 				if str(loss) == "nan": return print("\nLoss gradiant explosion, exiting!!!")  # restore!
 			if step % test_step == 0: self.test(step)
@@ -520,3 +546,43 @@ class net:
 		# print("prediction: %s" % result)
 		print("predicted: %s" % best)
 		return best
+
+
+	def argmax(self): # differentiable version
+		" if you want arg_max in your output layer, just use softmax and then arg_max AFTER training!"
+		# argmax = tf.argmax(self.last_layer) # not differentiable: "check your graph for ops that do not support gradients."
+		print("argmax")
+		argmax_filter = tf.constant(range(self.last_width), dtype=tf.float32)
+		val = tf.multiply(tf.nn.softmax(self.last_layer), argmax_filter)
+		argmax0=tf.reduce_max(val)
+		return self.add(argmax0) # No gradients provided for any variable:
+	# + @ ops.RegisterGradient("ArgMax")
+  # def _ArgMaxGrad(op, grad): todo
+
+	def argmax_2D_loss(self):
+		with tf.name_scope('2d classifier'):
+			y_ = self.target
+			vec = self.last_layer
+			self.output = y = prediction = self.last_layer
+			max_x = tf.reduce_max(vec, 1)
+			max_y = tf.reduce_max(vec, 2)
+			pos = tf.stack([max_x, max_y]) # use arg_max AFTER training
+			self.last_layer =self.add(pos)
+			self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_x, labels=y_[0]))
+			self.cost += tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_y, labels=y_[1]))
+
+
+	def argmax2d(self):
+		vec=self.last_layer
+		max_x = tf.reduce_max(vec, 1)
+		max_y = tf.reduce_max(vec, 2)
+		argmax_x_filter = tf.constant(range(max_x.shape[0]), dtype=tf.float32)
+		argmax_y_filter = tf.constant(range(max_y.shape[0]), dtype=tf.float32)
+		val_x = tf.multiply(tf.nn.softmax(max_x * 100), argmax_x_filter)
+		val_y = tf.multiply(tf.nn.softmax(max_y * 100), argmax_y_filter)
+		argmax_x = tf.reduce_max(val_x)
+		argmax_y = tf.reduce_max(val_y)
+		# concated = tf.concat([argmaxx, argmaxy],0)
+		pos = tf.stack([argmax_x, argmax_y])
+
+		return self.add(pos)
