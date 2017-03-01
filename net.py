@@ -12,6 +12,7 @@ try:
 except:  # python3 compatibility WTF
 	pass
 
+tf.max = tf.reduce_max
 
 print("tf.__version__:%s" % tf.__version__)
 
@@ -84,6 +85,7 @@ class net:
 				raise Exception("Please set input_width or input_shape")
 			if output_width == 0:
 				raise Exception("Please set number of classes via output_width")
+			# tf.Transform data
 			self.generate_model(model)
 
 	def get_data_shape(self):
@@ -347,11 +349,11 @@ class net:
 		val = tf.transpose(val, [1, 0, 2])
 		self.last = tf.gather(val, int(val.get_shape()[0]) - 1)
 
-	def classifier(self, classes=0):  # Define loss and optimizer
+	def classifier(self, classes=0,dim=1):  # Define loss and optimizer
 		if not classes: classes = self.num_classes
 		if not classes: raise Exception("Please specify num_classes")
 		with tf.name_scope('prediction'):  # prediction
-			if self.last_width != classes:
+			if dim==1 and self.last_width != classes:
 				# print("Automatically adding dense prediction")
 				self.dense(hidden=classes, activation=None, dropout=False)
 			# cross_entropy = -tf.reduce_sum(y_*y)
@@ -361,6 +363,7 @@ class net:
 			if classes > 100:
 				print("using sampled_softmax_loss")
 				y = prediction = self.last_layer
+				tf.nn.sparse_softmax_cross_entropy_with_logits()
 				self.cost = tf.reduce_mean(tf.nn.sampled_softmax_loss(y, y_))  # for big vocab
 			elif manual:
 				# prediction = y =self.last_layer=tf.nn.softmax(self.last_layer)
@@ -544,15 +547,42 @@ class net:
 		print("predicted: %s" % best)
 		return best
 
-	def max_pool_with_argmax(self):
-		print("max_pool_with_argmax")
-		kernel = [1, 3, 3, 1]
-		strides = [1, 1, 1, 1]
-		output, argmax=tf.nn.max_pool_with_argmax(self.last_layer, kernel, strides, padding="SAME")
-		# 'Targmax' has DataType float32 not in list of allowed values: int32, int64 WTF!
-		argmax=tf.cast(argmax,tf.float32)
-		print(argmax)
-		print("Jajaja: argmax as int not differentiable yet :(")
-		return self.add(argmax) # No gradients provided for any variable:
-# check your graph for ops that do not support gradients.  Jajaja: argmax as int not differentiable :(
 
+	def argmax(self): # differentiable version
+		" if you want arg_max in your output layer, just use softmax and then arg_max AFTER training!"
+		# argmax = tf.argmax(self.last_layer) # not differentiable: "check your graph for ops that do not support gradients."
+		print("argmax")
+		argmax_filter = tf.constant(range(self.last_width), dtype=tf.float32)
+		val = tf.multiply(tf.nn.softmax(self.last_layer), argmax_filter)
+		argmax0=tf.reduce_max(val)
+		return self.add(argmax0) # No gradients provided for any variable:
+	# + @ ops.RegisterGradient("ArgMax")
+  # def _ArgMaxGrad(op, grad): todo
+
+	def argmax_2D_loss(self):
+		with tf.name_scope('2d classifier'):
+			y_ = self.target
+			vec = self.last_layer
+			self.output = y = prediction = self.last_layer
+			max_x = tf.reduce_max(vec, 1)
+			max_y = tf.reduce_max(vec, 2)
+			pos = tf.stack([max_x, max_y]) # use arg_max AFTER training
+			self.last_layer =self.add(pos)
+			self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_x, labels=y_[0]))
+			self.cost += tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_y, labels=y_[1]))
+
+
+	def argmax2d(self):
+		vec=self.last_layer
+		max_x = tf.reduce_max(vec, 1)
+		max_y = tf.reduce_max(vec, 2)
+		argmax_x_filter = tf.constant(range(max_x.shape[0]), dtype=tf.float32)
+		argmax_y_filter = tf.constant(range(max_y.shape[0]), dtype=tf.float32)
+		val_x = tf.multiply(tf.nn.softmax(max_x * 100), argmax_x_filter)
+		val_y = tf.multiply(tf.nn.softmax(max_y * 100), argmax_y_filter)
+		argmax_x = tf.reduce_max(val_x)
+		argmax_y = tf.reduce_max(val_y)
+		# concated = tf.concat([argmaxx, argmaxy],0)
+		pos = tf.stack([argmax_x, argmax_y])
+
+		return self.add(pos)
