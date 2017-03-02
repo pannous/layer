@@ -66,12 +66,12 @@ class net:
 		with tf.device(device):
 			self.session = tf.Session()
 			self.model = model
-			self.input_shape = input_shape or [input_width, input_width]
-			if not input_width: input_width, _ = self.get_data_shape()
-			self.input_width = input_width
-			self.last_width = self.input_width
+			self.cost = None #yet
+			# if not isinstance(input_shape,list):
+			# 	input_shape=[input_shape] # or [input_shape,input_shape] if 2d?
+			self.input_shape = input_shape or [input_width, input_width] # todo: get rid of this
 			self.last_shape = self.input_shape
-			self.output_width = output_width
+			self.output_shape = output_width
 			self.num_classes = output_width
 			# self.batch_size=batch_size
 			self.layers = []
@@ -97,6 +97,22 @@ class net:
 		except:
 			raise Exception("Data does not have shape")
 
+	def input(self,shape):
+		with tf.name_scope('input'):
+			if not isinstance(shape,list): shape=[shape]
+			if shape[0] and shape[0]>0 : shape= [None] + shape # batch convention
+			self.x = self.last_layer = tf.placeholder(tf.float32, shape, name="input_x")
+			tf.add_to_collection('inputs', self.x)
+			print("input shape", shape)
+
+	def targets(self, shape):
+		with tf.name_scope('targets'):
+			if not isinstance(shape,list): shape=[shape]
+			if shape[0] and shape[0] > 0: shape = [None] + shape  # batch convention
+			self.y = self.target = tf.placeholder(tf.float32, shape, name="target_y")
+			tf.add_to_collection('targets', self.target)
+			print("target shape", shape)
+
 	def generate_model(self, model, name=''):
 		if not model: return self
 		with tf.name_scope('state'):
@@ -104,23 +120,12 @@ class net:
 			self.train_phase = tf.placeholder(tf.bool, name='train_phase')
 			with tf.device(_cpu): self.global_step = tf.Variable(0)
 			# dont set, feed or increment global_step, tensorflow will do it automatically
-		with tf.name_scope('data'):
-			if self.input_shape and len(self.input_shape) == 2:
-				shape_ = [None, self.input_shape[0], self.input_shape[1]]  # batch:None
-				# todo [batch_size, *self.input_shape]
-				self.x = x = self.input = tf.placeholder(tf.float32, shape_, name="input_x")
-				self.last_shape = x
-			elif self.input_width:
-				self.x = x = self.input = tf.placeholder(tf.float32, [None, self.input_width], name="input_x")
-			else:
-				raise Exception("need input_shape or input_width by now")
-			self.last_layer = self.x
-			tf.add_to_collection('inputs', self.x)
-			self.y = y = self.target = tf.placeholder(tf.float32, [None, self.output_width], name="target_y")
-			tf.add_to_collection('targets', self.target)
-		with tf.name_scope('model'):
-			model(self)
-		if (self.last_width != self.output_width):
+
+		self.input(self.input_shape or self.input_width)
+		self.targets(self.output_shape) # before model So that model can call classifier()
+		with tf.name_scope('model'): model(self)
+		if self.cost is None: # (self.last_width != self.output_shape and self.last_shape!= self.output_shape):
+			print("auto classifier") # bad :(
 			self.classifier()  # 10 classes auto
 
 	def dropout(self, keep_rate=0.6):
@@ -133,7 +138,6 @@ class net:
 		self.last_shape = layer.get_shape()
 		# help(self.last_shape.dims)
 		# print(self.last_shape.dims)
-		self.last_width = reduce(lambda x,y:mul(x,y.value or 1), self.last_shape.dims, 1)
 		return layer # For chaining
 
 
@@ -179,6 +183,9 @@ class net:
 
 	# self.add(tf.nn.SpatialConvolution(nChannels, nOutChannels, 1, 1, 1, 1, 0, 0))
 
+	def dim_product(self, shape=None):
+		if not shape: shape=self.last_shape
+		return reduce(lambda x, y: mul(x, y.value or 1), shape.dims, 1)
 
 	# Fully connected 'pyramid' layer, allows very high learning_rate >0.1 (but don't abuse)
 	# NOT TO BE CONFUSED with buildDenseConv below!
@@ -187,16 +194,16 @@ class net:
 		if depth < 3: print(
 			"WARNING: did you mean to use Fully connected layer 'dense'? Expecting depth>3 vs " + str(depth))
 		inputs = self.last_layer
-		inputs_width = self.last_width
+		inputs_width = self.dim_product(self.last_shape)
 		width = hidden
 		while depth > 0:
 			with tf.name_scope('DenNet_{:d}'.format(width)) as scope:
 				print("dense width ", inputs_width, "x", width)
 				nr = len(self.layers)
-				weights = tf.Variable(tf.random_uniform([inputs_width, width], minval=-1. / width, maxval=1. / width),
-				                      name="weights")
-				bias = tf.Variable(tf.random_uniform([width], minval=-1. / width, maxval=1. / width),
-				                   name="bias")  # auto nr + context
+				xavier = tf.random_uniform([inputs_width, width], minval=-1. / width, maxval=1. / width)
+				weights = tf.Variable(xavier, name="weights")
+				bias_xavier = tf.random_uniform([width], minval=-1. / width, maxval=1. / width)
+				bias = tf.Variable(bias_xavier, name="bias")  # auto nr + context
 				dense1 = tf.matmul(inputs, weights, name='dense_' + str(nr)) + bias
 				tf.summary.histogram('dense_' + str(nr), dense1)
 				tf.summary.histogram('dense_' + str(nr) + '/sparsity', tf.nn.zero_fraction(dense1))
@@ -208,11 +215,9 @@ class net:
 				if norm: dense1 = self.norm(dense1, lsize=1)  # SHAPE!
 				if dropout: dense1 = tf.nn.dropout(dense1, self.keep_prob)
 				self.add(dense1)
-				self.last_width = width
 				inputs = tf.concat(axis=1, values=[inputs, dense1])
 				inputs_width += width
 				depth = depth - 1
-		self.last_width = width
 
 	# Densely Connected Convolutional Networks https://arxiv.org/abs/1608.06993
 	def buildDenseConv(self, nBlocks=3, nChannels=64, magic_factor=0):
@@ -229,7 +234,6 @@ class net:
 		growthRate = 12
 		self.conv([3, 3, 1, nChannels])  # why this
 		# self.conv([1, 3, 3, nChannels]) # and not this?
-
 		# self.add(tf.nn.SpatialConvolution(3, nChannels, 3, 3, 1, 1, 1, 1))
 
 		for i in range(N):
@@ -266,24 +270,22 @@ class net:
 			print("dropout = False while using batchnorm")
 			dropout = False
 		shape = self.last_layer.get_shape()
-		if shape and len(shape) > 2:
-			if len(shape) == 3:
-				self.last_width = int(shape[1] * shape[2])
-			else:
-				self.last_width = int(shape[1] * shape[2] * shape[3])
-			if self.last_width == 0:
-				raise Exception("self.last_width Must not be zero")
-			print("reshaping ", shape, "to", self.last_width)
-			parent = tf.reshape(parent, [-1, self.last_width])
-
+		last_width = self.dim_product(shape)
 		width = hidden
+		if last_width == 0:
+			raise Exception("last_width Must not be zero")
+		if len(shape) > 2:
+			print("reshaping ", shape, "to", last_width)
+			parent = tf.reshape(parent, [-1, last_width])
+
 		while depth > 0:
 			with tf.name_scope('Dense_{:d}'.format(hidden)) as scope:
-				print("Dense ", self.last_width, width)
+				print("Dense ", last_width, width)
 				nr = len(self.layers)
-				U = tf.random_uniform([self.last_width, width], minval=-1. / width, maxval=1. / width)
-				# U = np.random.rand(self.last_width, width) / (self.last_width + width)
-				if self.last_width == width:
+				xavier = 1. / (last_width + width)
+				U = tf.random_uniform([last_width, width], minval=-xavier, maxval=xavier)
+				if last_width == width:
+					print("using experimental unitary initializer (vs xavier)")
 					U = closest_unitary(U / weight_divider)
 				weights = tf.Variable(U, name="weights_dense_" + str(nr), dtype=tf.float32)
 				bias = tf.Variable(tf.random_uniform([width], minval=-1. / width, maxval=1. / width), name="bias_dense")
@@ -298,16 +300,17 @@ class net:
 				if dropout: dense1 = tf.nn.dropout(dense1, self.keep_prob)
 				self.layers.append(dense1)
 				self.last_layer = parent = dense1
-				self.last_width = width
 				depth = depth - 1
 				self.last_shape = [-1, width]  # dense
 		return self.last_layer
 
-	def conv2d(self, outChannels=20, kernel=[3, 3], pool=True, dropout=False, norm=True):
+	def conv2d(self, outChannels=20, kernel=3, pool=True, dropout=False, norm=True):
 		with tf.name_scope('conv'):
 			print("input  shape ", self.last_shape)
 			print("conv   outChannels ", outChannels)
-			conv = slim.conv2d(self.last_layer, outChannels, kernel, scope="conv_" + str(len(self.layers)))
+			# conv = tf.nn.conv2d(self.last_layer, [1, kernel, kernel, 1], strides=[1, 2, 2, 1])
+			# conv = tf.nn.conv2d(self.last_layer, [1, kernel, kernel, 1], strides=[1, 1, 1, 1], padding='SAME')
+			conv = slim.convolution(self.last_layer, outChannels, kernel, scope="conv_" + str(len(self.layers)))
 			if pool: conv = slim.max_pool2d(conv, [3, 3], scope='pool')
 			# if pool: conv = tf.nn.max_pool(conv, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
 			if dropout: conv = tf.nn.dropout(conv, self.keep_prob)
@@ -353,7 +356,7 @@ class net:
 		if not classes: classes = self.num_classes
 		if not classes: raise Exception("Please specify num_classes")
 		with tf.name_scope('prediction'):  # prediction
-			if dim==1 and self.last_width != classes:
+			if dim==1 and self.dim_product() != classes:
 				# print("Automatically adding dense prediction")
 				self.dense(hidden=classes, activation=None, dropout=False)
 			# cross_entropy = -tf.reduce_sum(y_*y)
@@ -401,11 +404,11 @@ class net:
 			# if self.last_width != dimensions:
 			# 	self.dense(dimensions)
 			self.y = tf.placeholder(tf.float32, [None, dimensions], name="target_y")  # self.batch_size
-			print("REGRESSION 'accuracy' might not be indicative, watch loss")
 			with tf.name_scope("train"):
 				# self.learning_rate = tf.Variable(0.5, trainable=False)
 				self.cost = tf.reduce_mean(tf.pow(self.y - self.last_layer, 2))
 				self.optimize = tf.train.AdamOptimizer(self.learning_rate).minimize(self.cost)
+				print("REGRESSION 'accuracy' might not be indicative, watch loss")
 				self.accuracy = tf.maximum(0., 100 - tf.sqrt(self.cost)/tolerance)
 				# self.accuracy = 1 - abs(self.y - self.last_layer)
 				tf.add_to_collection('train_ops', [self.learning_rate, self.cost, self.optimize, self.accuracy])
@@ -437,6 +440,7 @@ class net:
 		# t = tf.verify_tensor_all_finite(t, msg)
 		tf.add_check_numerics_ops()
 		self.summaries = tf.summary.merge_all()
+		if self.summaries is None: self.summaries= tf.no_op()
 		self.summary_writer = tf.summary.FileWriter(current_logdir(), session.graph)
 		if not dropout: dropout = 1.  # keep all
 		x = self.x
@@ -488,10 +492,15 @@ class net:
 
 		feed_dict = {self.x: test_images, self.y: test_labels, self.keep_prob: 1., self.train_phase: False}
 		# accuracy,summary= self.session.run([self.accuracy, self.summaries], feed_dict=feed_dict)
+		# if not self.summaries is None:
 		accuracy, summary = session.run([self.accuracy, self.summaries], feed_dict, run_options, run_metadata)
+		# else:
+		# 	accuracy= session.run([self.accuracy], feed_dict, run_options, run_metadata)
+		# 	summary=None
+
 		print('\t' * 3 + "Test Accuracy: ", accuracy)
 		self.summary_writer.add_run_metadata(run_metadata, 'step #%03d' % step)
-		self.summary_writer.add_summary(summary, global_step=step)
+		if summary: self.summary_writer.add_summary(summary, global_step=step)
 		if accuracy == 1.0:
 			print("OVERFIT OK. Early stopping")
 			exit(0)
@@ -530,7 +539,7 @@ class net:
 		print("loading checkpoint %s" % checkpoint.model_checkpoint_path)
 		loader.restore(self.session, tf.train.latest_checkpoint(checkpoint_dir))
 		# loader.restore(self.session , checkpoint) #Unable to get element from the feed as bytes!  HUH??
-		self.input = self.x = tf.get_collection('inputs')[0]
+		self.x = tf.get_collection('inputs')[0]
 		self.target = self.y = tf.get_collection('targets')[0]
 		self.output = self.last_layer = tf.get_collection('outputs')[0]
 		self.dropout_keep_prob = self.session.graph.get_tensor_by_name("state/dropout_keep_prob:0")  # :0 WTF!?!?!
@@ -548,6 +557,18 @@ class net:
 		return best
 
 
+	# def one_hot(self, inputs, num_labels): # use tf.one_hot
+	# 	# e.g. inputs, num_labels = [0, 2], 4
+	# 	indexedInputs = [[i, inputs[i]] for i in range(len(inputs))]
+	# 	tf.sparse_to_dense(indexedInputs, [len(inputs), num_labels], 1)  # produces [[1,0,0,0], [0,0,1,0]]
+
+
+	# def argmax2direct(t): # not differentiable :
+	# 	return [tf.reduce_max(tf.arg_max(t, 0)), tf.reduce_max(tf.arg_max(t, 1))]
+	# + @ ops.RegisterGradient("ArgMax")
+	# def _ArgMaxGrad(op, grad): todone:
+
+
 	def argmax(self): # differentiable version
 		" if you want arg_max in your output layer, just use softmax and then arg_max AFTER training!"
 		# argmax = tf.argmax(self.last_layer) # not differentiable: "check your graph for ops that do not support gradients."
@@ -556,24 +577,10 @@ class net:
 		val = tf.multiply(tf.nn.softmax(self.last_layer), argmax_filter)
 		argmax0=tf.reduce_max(val)
 		return self.add(argmax0) # No gradients provided for any variable:
-	# + @ ops.RegisterGradient("ArgMax")
-  # def _ArgMaxGrad(op, grad): todo
 
-	def argmax_2D_loss(self):
-		with tf.name_scope('2d classifier'):
-			y_ = self.target
-			vec = self.last_layer
-			self.output = y = prediction = self.last_layer
-			max_x = tf.reduce_max(vec, 1)
-			max_y = tf.reduce_max(vec, 2)
-			pos = tf.stack([max_x, max_y]) # use arg_max AFTER training
-			self.last_layer =self.add(pos)
-			self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_x, labels=y_[0]))
-			self.cost += tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_y, labels=y_[1]))
-
-
-	def argmax2d(self):
-		vec=self.last_layer
+	def argmax2d(self):  # differentiable!
+		print("input  shape ", self.last_shape)
+		vec = self.last_layer
 		max_x = tf.reduce_max(vec, 1)
 		max_y = tf.reduce_max(vec, 2)
 		argmax_x_filter = tf.constant(range(max_x.shape[0]), dtype=tf.float32)
@@ -584,5 +591,48 @@ class net:
 		argmax_y = tf.reduce_max(val_y)
 		# concated = tf.concat([argmaxx, argmaxy],0)
 		pos = tf.stack([argmax_x, argmax_y])
-
+		print("argmax2d  ", pos.shape)
 		return self.add(pos)
+
+
+	def argmax_2D_loss(self):
+		print("input  shape ", self.last_shape)
+		with tf.name_scope('2d_classifier'): # i.e. position, peak of heatmap ...
+			vec = self.last_layer
+			self.output = y = prediction = self.last_layer
+			max_x = tf.reduce_max(vec, 1)
+			max_y = tf.reduce_max(vec, 2)
+			print("max_x ",max_x.shape)
+			# max_y = tf.reshape(max_y, shape=[-1, max_y.shape[1]])
+			# max_y = tf.reshape(max_y, shape=[-1, tf.shape(max_y)[1]])
+			# print(max_y.shape)
+			pos = tf.stack([max_x, max_y],axis=2)  # use arg_max AFTER training
+			pos = pos[:,:,:,0] # flatten
+			print("pos ", pos.shape)
+			# print("pos ", pos.shape)
+
+			print("argmax2d  (double one-hot) ", pos.shape)
+			self.last_layer =self.add(pos)
+			# self.last_width=pos.shape[-1]
+			# assert self.last_width==self.output_shape
+			print(self.target.shape)
+			target_x = self.target[:,:,0] #[:, 0] for direct regression
+			target_y = self.target[:,:,1]
+			# if self.target.shape[-1]==2 and len(self.target.shape)==2:
+			# print("argmax2d needs double one-hot labels")
+			# 	print("converting to double one-hot labels of depth %d"% self.input_width)
+			# 	target_x = tf.one_hot(target_x, self.input_width)  # nope! float32
+			# 	target_y = tf.one_hot(target_y, self.input_width)  # !
+			print("target_x",target_x.shape) # (?,) batch*1
+			# print(target_y.shape)
+			# self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_x, labels=target_x))
+			# self.cost += tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_y, labels=target_y))
+			self.prediction = [tf.arg_max(max_x, 1), tf.arg_max(max_y, 1)]
+			target_pos = [tf.arg_max(max_x, 1), tf.arg_max(max_y, 1)] # why not direct? int vs float!
+			correct_pred = tf.equal(self.prediction, target_pos)
+			self.accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
+			# self.accuracy = self.cost # debug
+
+			self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=pos, labels=self.target))
+			self.optimize = tf.train.AdamOptimizer(self.learning_rate).minimize(self.cost)
+
