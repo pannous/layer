@@ -18,7 +18,7 @@ setup(
     cmdclass=cmdclass,
     ext_modules=ext_modules,
     name='layer',
-    version="0.1.11",
+    version="0.1.14",
     author="Pannous",
     author_email="info@pannous.com",
     packages=find_packages(),
@@ -27,8 +27,6 @@ setup(
     long_description=open('README.md', 'rb').read().decode('utf8'),
     dependency_links=['git+http://github.com/pannous/context.git#egg=layer'],
     install_requires=['tensorflow'],
-    # scripts=['bin/angle'],
-    package_data={
-        # '': ['*.cu', '*.cuh', '*.h'],
-    },
+    # package_data={#     'extra_files':['*.png'] # },
+    # include_package_data=True,
 )
