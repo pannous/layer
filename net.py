@@ -430,80 +430,71 @@ class net:
 			except:
 				return next(self.data.train)
 
-	def train(self, data=0, steps=-1, dropout=None, display_step=10, test_step=100, batch_size=10,
-	          resume=save_step):  # epochs=-1,
-		print("learning_rate: %f" % self.learning_rate)
-		if data: self.data = data
-		steps = 9999999 if steps < 0 else steps
-		session = self.session
-		# with tf.device(_cpu):
-		# t = tf.verify_tensor_all_finite(t, msg)
-		tf.add_check_numerics_ops()
-		self.summaries = tf.summary.merge_all()
-		if self.summaries is None: self.summaries= tf.no_op()
-		self.summary_writer = tf.summary.FileWriter(current_logdir(), session.graph)
-		if not dropout: dropout = 1.  # keep all
-		x = self.x
-		y = self.y
-		keep_prob = self.keep_prob
-		if not resume or not self.resume(session):
-			session.run([tf.global_variables_initializer()])
-		saver = tf.train.Saver(tf.global_variables())
-		snapshot = self.name + str(get_last_tensorboard_run_nr())
-		step = 0  # show first
-		while step < steps:
-			batch_xs, batch_ys = self.next_batch(batch_size, session)
-			# batch_xs=np.array(batch_xs).reshape([-1]+self.input_shape)
-			# print("step %d \r" % step)# end=' ')
-			# tf.train.shuffle_batch_join(example_list, batch_size, capacity=min_queue_size + batch_size * 16, min_queue_size)
-			# Fit training using batch data
-			feed_dict = {x: batch_xs, y: batch_ys, keep_prob: dropout, self.train_phase: True}
-			loss, _ = session.run([self.cost, self.optimize], feed_dict=feed_dict)
-			if step % display_step == 0:
-				seconds = int(time.time()) - start
-				# Calculate batch accuracy, loss
-				feed = {x: batch_xs, y: batch_ys, keep_prob: 1., self.train_phase: False}
-				acc = session.run(self.accuracy, feed_dict=feed)
-				# acc, summary = session.run([self.accuracy, self.summaries], feed_dict=feed)
-				# self.summary_writer.add_summary(summary, step) # only test summaries for smoother curve and SPEED!
-				print("\rStep {:d} Loss= {:.6f} Accuracy= {:.3f} Time= {:d}s".format(step, loss, acc, seconds), end=' ')
-				if str(loss) == "nan": return print("\nLoss gradiant explosion, exiting!!!")  # restore!
-			if step % test_step == 0: self.test(step)
-			if step % save_step == 0 and step > 0:
-				print("SAVING snapshot %s" % snapshot)
-				saver.save(session, checkpoint_dir + "/" + snapshot + ".ckpt", self.global_step)
+	def argmax(self):  # differentiable version
+		" if you want arg_max in your output layer, just use softmax and then arg_max AFTER training!"
+		# argmax = tf.argmax(self.last_layer) # not differentiable: "check your graph for ops that do not support gradients."
+		print("argmax")
+		argmax_filter = tf.constant(range(self.last_width), dtype=tf.float32)
+		val = tf.multiply(tf.nn.softmax(self.last_layer), argmax_filter)
+		argmax0 = tf.reduce_max(val)
+		return self.add(argmax0)  # No gradients provided for any variable:
 
-			step += 1
-		print("\nOptimization Finished!")
-		self.test(step, number=10000)  # final test
+	def argmax2d(self):  # differentiable!
+		print("input  shape ", self.last_shape)
+		vec = self.last_layer
+		max_x = tf.reduce_max(vec, 1)
+		max_y = tf.reduce_max(vec, 2)
+		argmax_x_filter = tf.constant(range(max_x.shape[0]), dtype=tf.float32)
+		argmax_y_filter = tf.constant(range(max_y.shape[0]), dtype=tf.float32)
+		val_x = tf.multiply(tf.nn.softmax(max_x * 100), argmax_x_filter)
+		val_y = tf.multiply(tf.nn.softmax(max_y * 100), argmax_y_filter)
+		argmax_x = tf.reduce_max(val_x)
+		argmax_y = tf.reduce_max(val_y)
+		# concated = tf.concat([argmaxx, argmaxy],0)
+		pos = tf.stack([argmax_x, argmax_y])
+		print("argmax2d  ", pos.shape)
+		return self.add(pos)
 
-	def test(self, step, number=400):  # 256 self.batch_size
-		session = sess = self.session
-		config = projector.ProjectorConfig()
-		if visualize_cluster:  # EMBEDDINGs ++ https://github.com/tensorflow/tensorflow/issues/6322
-			embedding = config.embeddings.add()  # You can add multiple embeddings. Here just one.
+	def argmax_2D_loss(self):
+		print("input  shape ", self.last_shape)
+		with tf.name_scope('2d_classifier'):  # i.e. position, peak of heatmap ...
+			vec = self.last_layer
+			self.output = y = prediction = self.last_layer
+			max_x = tf.reduce_max(vec, 1)
+			max_y = tf.reduce_max(vec, 2)
+			print("max_x ", max_x.shape)
+			# max_y = tf.reshape(max_y, shape=[-1, max_y.shape[1]])
+			# max_y = tf.reshape(max_y, shape=[-1, tf.shape(max_y)[1]])
+			# print(max_y.shape)
+			pos = tf.stack([max_x, max_y], axis=2)  # use arg_max AFTER training
+			pos = pos[:, :, :, 0]  # flatten
+			print("pos ", pos.shape)
+			# print("pos ", pos.shape)
 
-		run_metadata = tf.RunMetadata()
-		run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-		# Calculate accuracy for 256 mnist test images
+			print("argmax2d  (double one-hot) ", pos.shape)
+			self.last_layer = self.add(pos)
+			# self.last_width=pos.shape[-1]
+			# assert self.last_width==self.output_shape
+			print(self.target.shape)
+			target_x = self.target[:, :, 0]  # [:, 0] for direct regression
+			target_y = self.target[:, :, 1]
+			# if self.target.shape[-1]==2 and len(self.target.shape)==2:
+			# print("argmax2d needs double one-hot labels")
+			# 	print("converting to double one-hot labels of depth %d"% self.input_width)
+			# 	target_x = tf.one_hot(target_x, self.input_width)  # nope! float32
+			# 	target_y = tf.one_hot(target_y, self.input_width)  # !
+			print("target_x", target_x.shape)  # (?,) batch*1
+			# print(target_y.shape)
+			# self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_x, labels=target_x))
+			# self.cost += tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_y, labels=target_y))
+			self.prediction = [tf.arg_max(max_x, 1), tf.arg_max(max_y, 1)]
+			target_pos = [tf.arg_max(max_x, 1), tf.arg_max(max_y, 1)]  # why not direct? int vs float!
+			correct_pred = tf.equal(self.prediction, target_pos)
+			self.accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
+			# self.accuracy = self.cost # debug
 
-		test_images, test_labels = self.next_batch(number, session, test=True)
-		# test_images = np.array(test_images).reshape([-1] + self.input_shape)
-
-		feed_dict = {self.x: test_images, self.y: test_labels, self.keep_prob: 1., self.train_phase: False}
-		# accuracy,summary= self.session.run([self.accuracy, self.summaries], feed_dict=feed_dict)
-		# if not self.summaries is None:
-		accuracy, summary = session.run([self.accuracy, self.summaries], feed_dict, run_options, run_metadata)
-		# else:
-		# 	accuracy= session.run([self.accuracy], feed_dict, run_options, run_metadata)
-		# 	summary=None
-
-		print('\t' * 3 + "Test Accuracy: ", accuracy)
-		self.summary_writer.add_run_metadata(run_metadata, 'step #%03d' % step)
-		if summary: self.summary_writer.add_summary(summary, global_step=step)
-		if accuracy == 1.0:
-			print("OVERFIT OK. Early stopping")
-			exit(0)
+			self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=pos, labels=self.target))
+			self.optimize = tf.train.AdamOptimizer(self.learning_rate).minimize(self.cost)
 
 	def resume(self, session):
 		checkpoint = tf.train.latest_checkpoint(checkpoint_dir)
@@ -546,14 +537,104 @@ class net:
 		self.train_phase = self.session.graph.get_tensor_by_name(name='state/train_phase:0')
 		return self
 
-	def predict(self, eval_data=None, model=None):
+	def train(self, data=0, steps=-1, dropout=None, display_step=10, test_step=100, batch_size=10,
+	          resume=save_step):  # epochs=-1,
+		print("learning_rate: %f" % self.learning_rate)
+		if data: self.data = data
+		steps = 9999999 if steps < 0 else steps
+		session = self.session
+		# with tf.device(_cpu):
+		# t = tf.verify_tensor_all_finite(t, msg)
+		tf.add_check_numerics_ops()
+		self.overfit = 0 # Counter for early stopping
+		self.summaries = tf.summary.merge_all()
+		if self.summaries is None: self.summaries= tf.no_op()
+		self.summary_writer = tf.summary.FileWriter(current_logdir(), session.graph)
+		if not dropout: dropout = 1.  # keep all
+		x = self.x
+		y = self.y
+		keep_prob = self.keep_prob
+		if not resume or not self.resume(session):
+			session.run([tf.global_variables_initializer()])
+		saver = tf.train.Saver(tf.global_variables())
+		snapshot = self.name + str(get_last_tensorboard_run_nr())
+		step = 0  # show first
+		while step < steps:
+			batch_xs, batch_ys = self.next_batch(batch_size, session)
+			# batch_xs=np.array(batch_xs).reshape([-1]+self.input_shape)
+			# print("step %d \r" % step)# end=' ')
+			# tf.train.shuffle_batch_join(example_list, batch_size, capacity=min_queue_size + batch_size * 16, min_queue_size)
+			# Fit training using batch data
+			feed_dict = {x: batch_xs, y: batch_ys, keep_prob: dropout, self.train_phase: True}
+			loss, _ = session.run([self.cost, self.optimize], feed_dict=feed_dict)
+			if step % display_step == 0:
+				seconds = int(time.time()) - start
+				# Calculate batch accuracy, loss
+				feed = {x: batch_xs, y: batch_ys, keep_prob: 1., self.train_phase: False}
+				acc = session.run(self.accuracy, feed_dict=feed)
+				# acc, summary = session.run([self.accuracy, self.summaries], feed_dict=feed)
+				# self.summary_writer.add_summary(summary, step) # only test summaries for smoother curve and SPEED!
+				print("\rStep {:d} Loss= {:.6f} Accuracy= {:.3f} Time= {:d}s".format(step, loss, acc, seconds), end=' ')
+				if str(loss) == "nan": return print("\nLoss gradiant explosion, exiting!!!")  # restore!
+			if step % test_step == 0: self.test(step)
+			if step % save_step == 0 and step > 0:
+				print("SAVING snapshot %s" % snapshot)
+				saver.save(session, checkpoint_dir + "/" + snapshot + ".ckpt", self.global_step)
+			if self.overfit>0:
+				print("OVERFIT OK. Early stopping")
+				return self
+			step += 1
+		print("\nOptimization Finished!")
+		self.test(step, number=10000)  # final test
+
+	def test(self, step, number=400):  # 256 self.batch_size
+		session = sess = self.session
+		config = projector.ProjectorConfig()
+		if visualize_cluster:  # EMBEDDINGs ++ https://github.com/tensorflow/tensorflow/issues/6322
+			embedding = config.embeddings.add()  # You can add multiple embeddings. Here just one.
+
+		run_metadata = tf.RunMetadata()
+		run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+		# Calculate accuracy for 256 mnist test images
+
+		test_images, test_labels = self.next_batch(number, session, test=True)
+		# test_images = np.array(test_images).reshape([-1] + self.input_shape)
+
+		feed_dict = {self.x: test_images, self.y: test_labels, self.keep_prob: 1., self.train_phase: False}
+		# accuracy,summary= self.session.run([self.accuracy, self.summaries], feed_dict=feed_dict)
+		# if not self.summaries is None:
+		accuracy, summary = session.run([self.accuracy, self.summaries], feed_dict, run_options, run_metadata)
+		# else:
+		# 	accuracy= session.run([self.accuracy], feed_dict, run_options, run_metadata)
+		# 	summary=None
+
+		print('\t' * 3 + "Test Accuracy: ", accuracy)
+		self.summary_writer.add_run_metadata(run_metadata, 'step #%03d' % step)
+		if summary: self.summary_writer.add_summary(summary, global_step=step)
+		if accuracy == 1.0:
+			self.overfit+=1
+
+	def predict_raw(self, eval_data=None, model=None):  # after training
 		if eval_data is None:
+			print("Predicting on random data")
 			eval_data = np.random.random(self.input_shape)
-		feed_dict = {self.x: [eval_data], self.dropout_keep_prob: 1.0, self.train_phase: False}
+		if not isinstance(eval_data, list): eval_data = [eval_data]
+		feed_dict = {self.x: eval_data, self.train_phase: False}
 		result = self.session.run([self.output], feed_dict)
+		print("prediction: %s" % result)
+		return result
+
+	def predict_class(self, eval_data=None, model=None):  # after training
+		result = self.predict_raw(eval_data, model)
 		best = np.argmax(result)
-		# print("prediction: %s" % result)
-		print("predicted: %s" % best)
+		print("interpreted as: %s" % best)
+		return best
+
+	def predict(self, eval_data=None, model=None): #  after training
+		result=self.predict_raw(eval_data,model)
+		# if classifier:
+		best = np.argmax(result)
+		print("interpreted as: %s" % best)
 		return best
 
 
@@ -567,72 +648,4 @@ class net:
 	# 	return [tf.reduce_max(tf.arg_max(t, 0)), tf.reduce_max(tf.arg_max(t, 1))]
 	# + @ ops.RegisterGradient("ArgMax")
 	# def _ArgMaxGrad(op, grad): todone:
-
-
-	def argmax(self): # differentiable version
-		" if you want arg_max in your output layer, just use softmax and then arg_max AFTER training!"
-		# argmax = tf.argmax(self.last_layer) # not differentiable: "check your graph for ops that do not support gradients."
-		print("argmax")
-		argmax_filter = tf.constant(range(self.last_width), dtype=tf.float32)
-		val = tf.multiply(tf.nn.softmax(self.last_layer), argmax_filter)
-		argmax0=tf.reduce_max(val)
-		return self.add(argmax0) # No gradients provided for any variable:
-
-	def argmax2d(self):  # differentiable!
-		print("input  shape ", self.last_shape)
-		vec = self.last_layer
-		max_x = tf.reduce_max(vec, 1)
-		max_y = tf.reduce_max(vec, 2)
-		argmax_x_filter = tf.constant(range(max_x.shape[0]), dtype=tf.float32)
-		argmax_y_filter = tf.constant(range(max_y.shape[0]), dtype=tf.float32)
-		val_x = tf.multiply(tf.nn.softmax(max_x * 100), argmax_x_filter)
-		val_y = tf.multiply(tf.nn.softmax(max_y * 100), argmax_y_filter)
-		argmax_x = tf.reduce_max(val_x)
-		argmax_y = tf.reduce_max(val_y)
-		# concated = tf.concat([argmaxx, argmaxy],0)
-		pos = tf.stack([argmax_x, argmax_y])
-		print("argmax2d  ", pos.shape)
-		return self.add(pos)
-
-
-	def argmax_2D_loss(self):
-		print("input  shape ", self.last_shape)
-		with tf.name_scope('2d_classifier'): # i.e. position, peak of heatmap ...
-			vec = self.last_layer
-			self.output = y = prediction = self.last_layer
-			max_x = tf.reduce_max(vec, 1)
-			max_y = tf.reduce_max(vec, 2)
-			print("max_x ",max_x.shape)
-			# max_y = tf.reshape(max_y, shape=[-1, max_y.shape[1]])
-			# max_y = tf.reshape(max_y, shape=[-1, tf.shape(max_y)[1]])
-			# print(max_y.shape)
-			pos = tf.stack([max_x, max_y],axis=2)  # use arg_max AFTER training
-			pos = pos[:,:,:,0] # flatten
-			print("pos ", pos.shape)
-			# print("pos ", pos.shape)
-
-			print("argmax2d  (double one-hot) ", pos.shape)
-			self.last_layer =self.add(pos)
-			# self.last_width=pos.shape[-1]
-			# assert self.last_width==self.output_shape
-			print(self.target.shape)
-			target_x = self.target[:,:,0] #[:, 0] for direct regression
-			target_y = self.target[:,:,1]
-			# if self.target.shape[-1]==2 and len(self.target.shape)==2:
-			# print("argmax2d needs double one-hot labels")
-			# 	print("converting to double one-hot labels of depth %d"% self.input_width)
-			# 	target_x = tf.one_hot(target_x, self.input_width)  # nope! float32
-			# 	target_y = tf.one_hot(target_y, self.input_width)  # !
-			print("target_x",target_x.shape) # (?,) batch*1
-			# print(target_y.shape)
-			# self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_x, labels=target_x))
-			# self.cost += tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=max_y, labels=target_y))
-			self.prediction = [tf.arg_max(max_x, 1), tf.arg_max(max_y, 1)]
-			target_pos = [tf.arg_max(max_x, 1), tf.arg_max(max_y, 1)] # why not direct? int vs float!
-			correct_pred = tf.equal(self.prediction, target_pos)
-			self.accuracy = tf.reduce_mean(tf.cast(correct_pred, tf.float32))
-			# self.accuracy = self.cost # debug
-
-			self.cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=pos, labels=self.target))
-			self.optimize = tf.train.AdamOptimizer(self.learning_rate).minimize(self.cost)
 
