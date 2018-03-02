@@ -500,12 +500,12 @@ class net:
 		checkpoint = tf.train.latest_checkpoint(checkpoint_dir)
 		if checkpoint:
 			if self.name and not self.name in checkpoint:
-				print("IGNORING checkpoint of other run : " + checkpoint + " !!!")
+				print("IGNORING checkpoint of other run : " + checkpoint + " !")
 				checkpoint = None
 		else:
 			print("NO checkpoint, nothing to resume")
 		if checkpoint:
-			print("LOADING " + checkpoint + " !!!")
+			print("LOADING " + checkpoint + " !")
 			try:
 				persister = tf.train.Saver(tf.global_variables())
 				persister.restore(session, checkpoint)
@@ -513,7 +513,7 @@ class net:
 				return True
 			except Exception as ex:
 				print(ex)
-				print("CANNOT LOAD checkpoint %s !!!" % checkpoint)
+				print("CANNOT LOAD checkpoint %s !" % checkpoint)
 		return False
 
 	def restore(self):  # name
@@ -545,7 +545,7 @@ class net:
 		session = self.session
 		# with tf.device(_cpu):
 		# t = tf.verify_tensor_all_finite(t, msg)
-		tf.add_check_numerics_ops()
+		# tf.add_check_numerics_ops()
 		self.overfit = 0 # Counter for early stopping
 		self.summaries = tf.summary.merge_all()
 		if self.summaries is None: self.summaries= tf.no_op()
@@ -575,7 +575,7 @@ class net:
 				# acc, summary = session.run([self.accuracy, self.summaries], feed_dict=feed)
 				# self.summary_writer.add_summary(summary, step) # only test summaries for smoother curve and SPEED!
 				print("\rStep {:d} Loss= {:.6f} Accuracy= {:.3f} Time= {:d}s".format(step, loss, acc, seconds), end=' ')
-				if str(loss) == "nan": return print("\nLoss gradiant explosion, exiting!!!")  # restore!
+				if str(loss) == "nan": return print("\nLoss gradiant explosion, exiting!")  # restore!
 			if step % test_step == 0: self.test(step)
 			if step % save_step == 0 and step > 0:
 				print("SAVING snapshot %s" % snapshot)
@@ -608,7 +608,7 @@ class net:
 		# 	accuracy= session.run([self.accuracy], feed_dict, run_options, run_metadata)
 		# 	summary=None
 
-		print('\t' * 3 + "Test Accuracy: ", accuracy)
+		print('\t' * 3 + "Test Accuracy: {:.2f}".format( accuracy))
 		self.summary_writer.add_run_metadata(run_metadata, 'step #%03d' % step)
 		if summary: self.summary_writer.add_summary(summary, global_step=step)
 		if accuracy == 1.0:
@@ -619,22 +619,22 @@ class net:
 			print("Predicting on random data")
 			eval_data = np.random.random(self.input_shape)
 		if not isinstance(eval_data, list): eval_data = [eval_data]
-		feed_dict = {self.x: eval_data, self.train_phase: False}
+		feed_dict = {self.x: eval_data, self.train_phase: False, self.dropout_keep_prob:1}
 		result = self.session.run([self.output], feed_dict)
-		print("prediction: %s" % result)
+		# print("prediction: %s" % result)
 		return result
 
 	def predict_class(self, eval_data=None, model=None):  # after training
 		result = self.predict_raw(eval_data, model)
 		best = np.argmax(result)
-		print("interpreted as: %s" % best)
+		# print("interpreted as: %s" % best)
 		return best
 
 	def predict(self, eval_data=None, model=None): #  after training
 		result=self.predict_raw(eval_data,model)
 		# if classifier:
 		best = np.argmax(result)
-		print("interpreted as: %s" % best)
+		# print("interpreted as: %s" % best)
 		return best
 
 

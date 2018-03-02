@@ -66,7 +66,10 @@ def run_tensorboard(restart=False,show_browser=False):
 	if restart: kill_tensorboard()
 		#  cd /usr/local/lib/python2.7/dist-packages/tensorflow/tensorboard/ in tf 10.0 due to BUG
 		# ,cwd="/usr/local/lib/python2.7/dist-packages/tensorflow/tensorboard"
-	subprocess.Popen(["tensorboard", '--logdir=' + tensorboard_logs])  # async
+	try:
+		subprocess.Popen(["tensorboard", '--logdir=' + tensorboard_logs])  # async
+	except:
+		print("tensorboard missing, install if you like")
 	# os.system("sleep 5; open http://0.0.0.0:6006")
 	if show_browser:
 		subprocess.Popen(["open", 'http://0.0.0.0:6006'])  # async
